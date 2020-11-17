@@ -1,0 +1,11 @@
+[package]
+name = "async_await"
+version = "0.1.0"
+edition = "2018"
+authors = ["Christoph Herzog <chris@theduke.at>"]
+publish = false
+
+[dependencies]
+juniper = { path = "../../juniper" }
+futures = "0.3.1"
+tokio = { version = "0.2", features = ["rt-core", "time", "macros"] }

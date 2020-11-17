@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 use crate::{
     executor::Variables,
     parser::Spanning,
-    value::{DefaultScalarValue, ScalarRefValue, ScalarValue},
+    value::{DefaultScalarValue, ScalarValue},
 };
 
 /// A type literal in the syntax tree
@@ -147,14 +147,20 @@ pub type Document<'a, S> = Vec<Definition<'a, S>>;
 /// Parse an unstructured input value into a Rust data type.
 ///
 /// The conversion _can_ fail, and must in that case return None. Implemented
-/// automatically by the convenience macro `graphql_scalar!` or by deriving GraphQLEnum.
+/// automatically by the convenience proc macro `graphql_scalar` or by deriving GraphQLEnum.
 ///
 /// Must be implemented manually when manually exposing new enums or scalars.
 pub trait FromInputValue<S = DefaultScalarValue>: Sized {
     /// Performs the conversion.
-    fn from_input_value(v: &InputValue<S>) -> Option<Self>
-    where
-        for<'b> &'b S: ScalarRefValue<'b>;
+    fn from_input_value(v: &InputValue<S>) -> Option<Self>;
+
+    /// Performs the conversion from an absent value (e.g. to distinguish between implicit and
+    /// explicit null). The default implementation just uses `from_input_value` as if an explicit
+    /// null were provided. This conversion must not fail.
+    fn from_implicit_null() -> Self {
+        Self::from_input_value(&InputValue::<S>::Null)
+            .expect("input value conversion from null must not fail")
+    }
 }
 
 /// Losslessly clones a Rust data type into an InputValue.
@@ -316,7 +322,6 @@ where
     pub fn convert<T>(&self) -> Option<T>
     where
         T: FromInputValue<S>,
-        for<'b> &'b S: ScalarRefValue<'b>,
     {
         <T as FromInputValue<S>>::from_input_value(self)
     }
@@ -346,30 +351,18 @@ where
     }
 
     /// View the underlying int value, if present.
-    #[deprecated(since = "0.11.0", note = "Use `InputValue::as_scalar_value` instead")]
-    pub fn as_int_value<'a>(&'a self) -> Option<i32>
-    where
-        &'a S: Into<Option<&'a i32>>,
-    {
-        self.as_scalar_value().cloned()
+    pub fn as_int_value(&self) -> Option<i32> {
+        self.as_scalar_value().and_then(|s| s.as_int())
     }
 
     /// View the underlying float value, if present.
-    #[deprecated(since = "0.11.0", note = "Use `InputValue::as_scalar_value` instead")]
-    pub fn as_float_value<'a>(&'a self) -> Option<f64>
-    where
-        &'a S: Into<Option<&'a f64>>,
-    {
-        self.as_scalar_value().cloned()
+    pub fn as_float_value(&self) -> Option<f64> {
+        self.as_scalar_value().and_then(|s| s.as_float())
     }
 
     /// View the underlying string value, if present.
-    #[deprecated(since = "0.11.0", note = "Use `InputValue::as_scalar_value` instead")]
-    pub fn as_string_value<'a>(&'a self) -> Option<&'a str>
-    where
-        &'a S: Into<Option<&'a String>>,
-    {
-        self.as_scalar_value().map(|s| s as &str)
+    pub fn as_string_value(&self) -> Option<&str> {
+        self.as_scalar_value().and_then(|s| s.as_str())
     }
 
     /// View the underlying scalar value, if present.
@@ -459,13 +452,17 @@ where
 impl<S> fmt::Display for InputValue<S>
 where
     S: ScalarValue,
-    for<'b> &'b S: ScalarRefValue<'b>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             InputValue::Null => write!(f, "null"),
-            InputValue::Scalar(ref s) if s.is_type::<String>() => write!(f, "\"{}\"", s),
-            InputValue::Scalar(ref s) => write!(f, "{}", s),
+            InputValue::Scalar(ref s) => {
+                if let Some(s) = s.as_str() {
+                    write!(f, "\"{}\"", s)
+                } else {
+                    write!(f, "{}", s)
+                }
+            }
             InputValue::Enum(ref v) => write!(f, "{}", v),
             InputValue::Variable(ref v) => write!(f, "${}", v),
             InputValue::List(ref v) => {

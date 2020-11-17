@@ -135,7 +135,7 @@ impl<'a> Lexer<'a> {
     fn emit_single_char(&mut self, t: Token<'a>) -> Spanning<Token<'a>> {
         assert!(self.position.index() <= self.length);
 
-        let start_pos = self.position.clone();
+        let start_pos = self.position;
 
         self.next_char()
             .expect("Internal error in GraphQL lexer: emit_single_char reached EOF");
@@ -167,13 +167,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_ellipsis(&mut self) -> LexerResult<'a> {
-        let start_pos = self.position.clone();
+        let start_pos = self.position;
 
         for _ in 0..3 {
-            let (_, ch) = self.next_char().ok_or(Spanning::zero_width(
-                &self.position,
-                LexerError::UnexpectedEndOfFile,
-            ))?;
+            let (_, ch) = self.next_char().ok_or_else(|| {
+                Spanning::zero_width(&self.position, LexerError::UnexpectedEndOfFile)
+            })?;
             if ch != '.' {
                 return Err(Spanning::zero_width(
                     &start_pos,
@@ -297,7 +296,11 @@ impl<'a> Lexer<'a> {
             len += 1;
         }
 
-        let escape = &self.source[start_idx..=end_idx];
+        // Make sure we are on a valid char boundary.
+        let escape = &self
+            .source
+            .get(start_idx..=end_idx)
+            .ok_or_else(|| Spanning::zero_width(&self.position, LexerError::UnterminatedString))?;
 
         if len != 4 {
             return Err(Spanning::zero_width(
@@ -538,3 +541,5 @@ impl fmt::Display for LexerError {
         }
     }
 }
+
+impl std::error::Error for LexerError {}

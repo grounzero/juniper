@@ -1,226 +1,231 @@
-use crate::util;
-use proc_macro::TokenStream;
+#![allow(clippy::collapsible_if)]
+
+use crate::{
+    result::{GraphQLScope, UnsupportedAttribute},
+    util::{self, span_container::SpanContainer, RenameRule},
+};
+use proc_macro2::TokenStream;
 use quote::quote;
+use syn::{ext::IdentExt, spanned::Spanned};
 
-/// Generate code for the juniper::object macro.
-pub fn build_object(args: TokenStream, body: TokenStream, is_internal: bool) -> TokenStream {
-    let impl_attrs = match syn::parse::<util::ObjectAttributes>(args) {
-        Ok(attrs) => attrs,
-        Err(e) => {
-            panic!("Invalid attributes:\n{}", e);
-        }
+/// Generate code for the juniper::graphql_object macro.
+pub fn build_object(args: TokenStream, body: TokenStream, error: GraphQLScope) -> TokenStream {
+    let definition = match create(args, body, error) {
+        Ok(definition) => definition,
+        Err(err) => return err.to_compile_error(),
     };
+    definition.into_tokens()
+}
 
-    let item = match syn::parse::<syn::Item>(body) {
-        Ok(item) => item,
-        Err(err) => {
-            panic!("Parsing error:\n{}", err);
-        }
+/// Generate code for the juniper::graphql_subscription macro.
+pub fn build_subscription(
+    args: TokenStream,
+    body: TokenStream,
+    error: GraphQLScope,
+) -> TokenStream {
+    let definition = match create(args, body, error) {
+        Ok(definition) => definition,
+        Err(err) => return err.to_compile_error(),
     };
-    let mut _impl = match item {
-        syn::Item::Impl(_impl) => _impl,
-        _ => {
-            panic!("#[juniper::object] can only be applied to impl blocks");
-        }
-    };
+    definition.into_subscription_tokens()
+}
 
-    match _impl.trait_ {
-        Some((_, ref path, _)) => {
-            let name = path
-                .segments
-                .iter()
-                .map(|segment| segment.ident.to_string())
-                .collect::<Vec<_>>()
-                .join(".");
-            if !(name == "GraphQLObject" || name == "juniper.GraphQLObject") {
-                panic!("The impl block must implement the 'GraphQLObject' trait");
-            }
-        }
-        None => {
-            // panic!("The impl block must implement the 'GraphQLObject' trait");
-        }
-    }
+fn create(
+    args: TokenStream,
+    body: TokenStream,
+    error: GraphQLScope,
+) -> syn::Result<util::GraphQLTypeDefiniton> {
+    let body_span = body.span();
+    let _impl = util::parse_impl::ImplBlock::parse(args, body)?;
+    let name = _impl
+        .attrs
+        .name
+        .clone()
+        .map(SpanContainer::into_inner)
+        .unwrap_or_else(|| _impl.type_ident.unraw().to_string());
 
-    let name = match impl_attrs.name.as_ref() {
-        Some(type_name) => type_name.clone(),
-        None => {
-            let error_msg = "Could not determine a name for the object type: specify one with #[juniper::object(name = \"SomeName\")";
+    let top_attrs = &_impl.attrs;
 
-            let path = match &*_impl.self_ty {
-                syn::Type::Path(ref type_path) => &type_path.path,
-                syn::Type::Reference(ref reference) => match &*reference.elem {
-                    syn::Type::Path(ref type_path) => &type_path.path,
-                    syn::Type::TraitObject(ref trait_obj) => {
-                        match trait_obj.bounds.iter().nth(0).unwrap() {
-                            syn::TypeParamBound::Trait(ref trait_bound) => &trait_bound.path,
-                            _ => panic!(error_msg),
-                        }
-                    }
-                    _ => panic!(error_msg),
-                },
-                _ => panic!(error_msg),
+    let scalar = _impl
+        .attrs
+        .scalar
+        .as_ref()
+        .map(|s| quote!( #s ))
+        .unwrap_or_else(|| quote!(::juniper::DefaultScalarValue));
+
+    let fields = _impl
+        .methods
+        .iter()
+        .filter_map(|method| {
+            let span = method.span();
+            let _type = match method.sig.output {
+                syn::ReturnType::Type(_, ref t) => *t.clone(),
+                syn::ReturnType::Default => {
+                    error.emit_custom(method.sig.span(), "return value required");
+                    return None;
+                }
             };
 
-            path.segments.iter().last().unwrap().ident.to_string()
-        }
-    };
+            let is_async = method.sig.asyncness.is_some();
 
-    let target_type = *_impl.self_ty.clone();
+            let attrs = match util::FieldAttributes::from_attrs(
+                &method.attrs,
+                util::FieldAttributeParseMode::Impl,
+            ) {
+                Ok(attrs) => attrs,
+                Err(err) => {
+                    proc_macro_error::emit_error!(err);
+                    return None;
+                }
+            };
 
-    let description = impl_attrs
-        .description
-        .or(util::get_doc_comment(&_impl.attrs));
+            let parse_method =
+                _impl.parse_method(&method, true, |captured, arg_ident, is_mut: bool| {
+                    let arg_name = arg_ident.unraw().to_string();
+                    let ty = &captured.ty;
 
-    let mut definition = util::GraphQLTypeDefiniton {
-        name,
-        _type: target_type.clone(),
-        context: impl_attrs.context,
-        scalar: impl_attrs.scalar,
-        description,
-        fields: Vec::new(),
-        generics: _impl.generics.clone(),
-        interfaces: if impl_attrs.interfaces.len() > 0 {
-            Some(impl_attrs.interfaces)
-        } else {
-            None
-        },
-        include_type_generics: false,
-        generic_scalar: false,
-    };
+                    let final_name = attrs
+                        .argument(&arg_name)
+                        .and_then(|attrs| attrs.rename.clone().map(|ident| ident.value()))
+                        .unwrap_or_else(|| {
+                            top_attrs
+                                .rename
+                                .unwrap_or(RenameRule::CamelCase)
+                                .apply(&arg_name)
+                        });
 
-    for item in _impl.items {
-        match item {
-            syn::ImplItem::Method(method) => {
-                let _type = match &method.sig.output {
-                    syn::ReturnType::Type(_, ref t) => (**t).clone(),
-                    syn::ReturnType::Default => {
-                        panic!(
-                            "Invalid field method {}: must return a value",
-                            method.sig.ident
+                    let mut_modifier = if is_mut { quote!(mut) } else { quote!() };
+
+                    if final_name.starts_with("__") {
+                        error.no_double_underscore(
+                            if let Some(name) = attrs
+                                .argument(&arg_name)
+                                .and_then(|attrs| attrs.rename.as_ref())
+                            {
+                                name.span_ident()
+                            } else {
+                                arg_ident.span()
+                            },
                         );
                     }
-                };
 
-                let attrs = match util::FieldAttributes::from_attrs(
-                    method.attrs,
-                    util::FieldAttributeParseMode::Impl,
-                ) {
-                    Ok(attrs) => attrs,
-                    Err(err) => panic!(
-                        "Invalid #[graphql(...)] attribute on field {}:\n{}",
-                        method.sig.ident, err
-                    ),
-                };
+                    let resolver = quote!(
+                        let #mut_modifier #arg_ident = args
+                            .get::<#ty>(#final_name)
+                            .unwrap_or_else(::juniper::FromInputValue::<#scalar>::from_implicit_null);
+                    );
 
-                let mut args = Vec::new();
-                let mut resolve_parts = Vec::new();
+                    let field_type = util::GraphQLTypeDefinitionFieldArg {
+                        description: attrs
+                            .argument(&arg_name)
+                            .and_then(|arg| arg.description.as_ref().map(|d| d.value())),
+                        default: attrs
+                            .argument(&arg_name)
+                            .and_then(|arg| arg.default.clone()),
+                        _type: ty.clone(),
+                        name: final_name,
+                    };
+                    Ok((resolver, field_type))
+                });
 
-                for arg in method.sig.inputs {
-                    match arg {
-                        syn::FnArg::Receiver(rec) => {
-                            if rec.reference.is_none() || rec.mutability.is_some() {
-                                panic!(
-                                    "Invalid method receiver {}(self, ...): did you mean '&self'?",
-                                    method.sig.ident
-                                );
-                            }
-                        }
-                        syn::FnArg::Typed(ref captured) => {
-                            let (arg_ident, is_mut) = match &*captured.pat {
-                                syn::Pat::Ident(ref pat_ident) => {
-                                    (&pat_ident.ident, pat_ident.mutability.is_some())
-                                }
-                                _ => {
-                                    panic!("Invalid token for function argument");
-                                }
-                            };
-                            let arg_name = arg_ident.to_string();
-
-                            let context_type = definition.context.as_ref();
-
-                            // Check for executor arguments.
-                            if util::type_is_identifier_ref(&captured.ty, "Executor") {
-                                resolve_parts.push(quote!(let #arg_ident = executor;));
-                            }
-                            // Make sure executor is specified as a reference.
-                            else if util::type_is_identifier(&captured.ty, "Executor") {
-                                panic!("Invalid executor argument: to access the Executor, you need to specify the type as a reference.\nDid you mean &Executor?");
-                            }
-                            // Check for context arg.
-                            else if context_type
-                                .clone()
-                                .map(|ctx| util::type_is_ref_of(&captured.ty, ctx))
-                                .unwrap_or(false)
-                            {
-                                resolve_parts.push(quote!( let #arg_ident = executor.context(); ));
-                            }
-                            // Make sure the user does not specify the Context
-                            //  without a reference. (&Context)
-                            else if context_type
-                                .clone()
-                                .map(|ctx| ctx == &*captured.ty)
-                                .unwrap_or(false)
-                            {
-                                panic!(
-                                    "Invalid context argument: to access the context, you need to specify the type as a reference.\nDid you mean &{}?",
-                                    quote!(captured.ty),
-                                );
-                            } else {
-                                // Regular argument.
-
-                                let ty = &captured.ty;
-                                // TODO: respect graphql attribute overwrite.
-                                let final_name = util::to_camel_case(&arg_name);
-                                let expect_text = format!("Internal error: missing argument {} - validation must have failed", &final_name);
-                                let mut_modifier = if is_mut { quote!(mut) } else { quote!() };
-                                resolve_parts.push(quote!(
-                                    let #mut_modifier #arg_ident = args
-                                        .get::<#ty>(#final_name)
-                                        .expect(#expect_text);
-                                ));
-                                args.push(util::GraphQLTypeDefinitionFieldArg {
-                                    description: attrs.argument(&arg_name).and_then(|arg| {
-                                        arg.description.as_ref().map(|d| d.value())
-                                    }),
-                                    default: attrs
-                                        .argument(&arg_name)
-                                        .and_then(|arg| arg.default.clone()),
-                                    _type: ty.clone(),
-                                    name: final_name,
-                                })
-                            }
-                        }
-                    }
+            let (resolve_parts, args) = match parse_method {
+                Ok((resolve_parts, args)) => (resolve_parts, args),
+                Err(err) => {
+                    proc_macro_error::emit_error!(err);
+                    return None;
                 }
+            };
 
-                let body = &method.block;
-                let return_ty = &method.sig.output;
-                let resolver_code = quote!(
-                    (|| #return_ty {
-                        #( #resolve_parts )*
-                        #body
-                    })()
-                );
+            let body = &method.block;
+            let resolver_code = quote!(
+                #( #resolve_parts )*
+                #body
+            );
 
-                let ident = &method.sig.ident;
-                let name = attrs
-                    .name
-                    .unwrap_or_else(|| util::to_camel_case(&ident.to_string()));
+            let ident = &method.sig.ident;
+            let name = attrs
+                .name
+                .clone()
+                .map(SpanContainer::into_inner)
+                .unwrap_or_else(|| {
+                    top_attrs
+                        .rename
+                        .unwrap_or(RenameRule::CamelCase)
+                        .apply(&ident.unraw().to_string())
+                });
 
-                definition.fields.push(util::GraphQLTypeDefinitionField {
-                    name,
-                    _type,
-                    args,
-                    description: attrs.description,
-                    deprecation: attrs.deprecation,
-                    resolver_code,
+            if name.starts_with("__") {
+                error.no_double_underscore(if let Some(name) = attrs.name {
+                    name.span_ident()
+                } else {
+                    ident.span()
                 });
             }
-            _ => {
-                panic!("Invalid item for GraphQL Object: only type declarations and methods are allowed");
+
+            if let Some(default) = attrs.default {
+                error.unsupported_attribute_within(
+                    default.span_ident(),
+                    UnsupportedAttribute::Default,
+                );
             }
-        }
+
+            Some(util::GraphQLTypeDefinitionField {
+                name,
+                _type,
+                args,
+                description: attrs.description.map(SpanContainer::into_inner),
+                deprecation: attrs.deprecation.map(SpanContainer::into_inner),
+                resolver_code,
+                is_type_inferred: false,
+                is_async,
+                default: None,
+                span,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Early abort after checking all fields
+    proc_macro_error::abort_if_dirty();
+
+    if let Some(duplicates) =
+        crate::util::duplicate::Duplicate::find_by_key(&fields, |field| &field.name)
+    {
+        error.duplicate(duplicates.iter())
     }
-    let juniper_crate_name = if is_internal { "crate" } else { "juniper" };
-    definition.into_tokens(juniper_crate_name).into()
+
+    if !_impl.attrs.is_internal && name.starts_with("__") {
+        error.no_double_underscore(if let Some(name) = _impl.attrs.name {
+            name.span_ident()
+        } else {
+            _impl.type_ident.span()
+        });
+    }
+
+    if fields.is_empty() {
+        error.not_empty(body_span);
+    }
+
+    // Early abort after GraphQL properties
+    proc_macro_error::abort_if_dirty();
+
+    let definition = util::GraphQLTypeDefiniton {
+        name,
+        _type: *_impl.target_type.clone(),
+        scalar: _impl.attrs.scalar.map(SpanContainer::into_inner),
+        context: _impl.attrs.context.map(SpanContainer::into_inner),
+        description: _impl.description,
+        fields,
+        generics: _impl.generics.clone(),
+        interfaces: _impl
+            .attrs
+            .interfaces
+            .into_iter()
+            .map(SpanContainer::into_inner)
+            .collect(),
+        include_type_generics: false,
+        generic_scalar: true,
+        no_async: _impl.attrs.no_async.is_some(),
+    };
+
+    Ok(definition)
 }

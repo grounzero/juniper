@@ -1,16 +1,9 @@
-extern crate iron;
-extern crate juniper;
-extern crate juniper_iron;
-extern crate logger;
-extern crate mount;
-extern crate serde;
-
 use std::env;
 
 use iron::prelude::*;
 use juniper::{
-    tests::{model::Database, schema::Query},
-    EmptyMutation,
+    tests::fixtures::starwars::schema::{Database, Query},
+    DefaultScalarValue, EmptyMutation, EmptySubscription,
 };
 use juniper_iron::{GraphQLHandler, GraphiQLHandler};
 use logger::Logger;
@@ -23,9 +16,13 @@ fn context_factory(_: &mut Request) -> IronResult<Database> {
 fn main() {
     let mut mount = Mount::new();
 
-    let graphql_endpoint =
-        GraphQLHandler::new(context_factory, Query, EmptyMutation::<Database>::new());
-    let graphiql_endpoint = GraphiQLHandler::new("/graphql");
+    let graphql_endpoint = <GraphQLHandler<_, _, _, _, _, DefaultScalarValue>>::new(
+        context_factory,
+        Query,
+        EmptyMutation::<Database>::new(),
+        EmptySubscription::<Database>::new(),
+    );
+    let graphiql_endpoint = GraphiQLHandler::new("/graphql", None);
 
     mount.mount("/", graphiql_endpoint);
     mount.mount("/graphql", graphql_endpoint);

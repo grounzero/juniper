@@ -10,7 +10,7 @@ use crate::{
     parser::{ParseError, ScalarToken},
     schema::model::SchemaType,
     types::base::TypeKind,
-    value::{DefaultScalarValue, ParseScalarValue, ScalarRefValue, ScalarValue},
+    value::{DefaultScalarValue, ParseScalarValue, ScalarValue},
 };
 
 /// Whether an item is deprecated, with context.
@@ -169,6 +169,14 @@ pub struct Field<'a, S> {
     pub deprecation_status: DeprecationStatus,
 }
 
+impl<'a, S> Field<'a, S> {
+    /// Returns true if the type is built-in to GraphQL.
+    pub fn is_builtin(&self) -> bool {
+        // "used exclusively by GraphQL’s introspection system"
+        self.name.starts_with("__")
+    }
+}
+
 /// Metadata for an argument to a field
 #[derive(Debug, Clone)]
 pub struct Argument<'a, S> {
@@ -180,6 +188,14 @@ pub struct Argument<'a, S> {
     pub arg_type: Type<'a>,
     #[doc(hidden)]
     pub default_value: Option<InputValue<S>>,
+}
+
+impl<'a, S> Argument<'a, S> {
+    /// Returns true if the type is built-in to GraphQL.
+    pub fn is_builtin(&self) -> bool {
+        // "used exclusively by GraphQL’s introspection system"
+        self.name.starts_with("__")
+    }
 }
 
 /// Metadata for a single value in an enum
@@ -368,6 +384,22 @@ impl<'a, S> MetaType<'a, S> {
         }
     }
 
+    /// Returns true if the type is built-in to GraphQL.
+    pub fn is_builtin(&self) -> bool {
+        if let Some(name) = self.name() {
+            // "used exclusively by GraphQL’s introspection system"
+            {
+                name.starts_with("__") ||
+            // <https://facebook.github.io/graphql/draft/#sec-Scalars>
+            name == "Boolean" || name == "String" || name == "Int" || name == "Float" || name == "ID" ||
+            // Our custom empty markers
+            name == "_EmptyMutation" || name == "_EmptySubscription"
+            }
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn fields<'b>(&self, schema: &'b SchemaType<S>) -> Option<Vec<&'b Field<'b, S>>> {
         schema
             .lookup_type(&self.as_type())
@@ -395,7 +427,6 @@ where
     pub fn new<T>(name: Cow<'a, str>) -> Self
     where
         T: FromInputValue<S> + ParseScalarValue<S> + 'a,
-        for<'b> &'b S: ScalarRefValue<'b>,
     {
         ScalarMeta {
             name,
@@ -491,7 +522,6 @@ where
     pub fn new<T>(name: Cow<'a, str>, values: &[EnumValue]) -> Self
     where
         T: FromInputValue<S>,
-        for<'b> &'b S: ScalarRefValue<'b>,
     {
         EnumMeta {
             name,
@@ -574,9 +604,9 @@ where
     S: ScalarValue,
 {
     /// Build a new input type with the specified name and input fields
-    pub fn new<T: FromInputValue<S>>(name: Cow<'a, str>, input_fields: &[Argument<'a, S>]) -> Self
+    pub fn new<T>(name: Cow<'a, str>, input_fields: &[Argument<'a, S>]) -> Self
     where
-        for<'b> &'b S: ScalarRefValue<'b>,
+        T: FromInputValue<S> + ?Sized,
     {
         InputObjectMeta {
             name,
@@ -606,29 +636,6 @@ impl<'a, S> Field<'a, S> {
     /// This overwrites the description if any was previously set.
     pub fn description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
-        self
-    }
-
-    /// Adds a (multi)line doc string to the description of the field.
-    /// Any leading or trailing newlines will be removed.
-    ///
-    /// If the docstring contains newlines, repeated leading tab and space characters
-    /// will be removed from the beginning of each line.
-    ///
-    /// If the description hasn't been set, the description is set to the provided line.
-    /// Otherwise, the doc string is added to the current description after a newline.
-    pub fn push_docstring(mut self, multiline: &[&str]) -> Field<'a, S> {
-        if let Some(docstring) = clean_docstring(multiline) {
-            match &mut self.description {
-                &mut Some(ref mut desc) => {
-                    desc.push('\n');
-                    desc.push_str(&docstring);
-                }
-                desc @ &mut None => {
-                    *desc = Some(docstring);
-                }
-            }
-        }
         self
     }
 
@@ -676,30 +683,9 @@ impl<'a, S> Argument<'a, S> {
         self
     }
 
-    /// Adds a (multi)line doc string to the description of the field.
-    /// Any leading or trailing newlines will be removed.
-    ///
-    /// If the docstring contains newlines, repeated leading tab and space characters
-    /// will be removed from the beginning of each line.
-    ///
-    /// If the description hasn't been set, the description is set to the provided line.
-    /// Otherwise, the doc string is added to the current description after a newline.
-    pub fn push_docstring(mut self, multiline: &[&str]) -> Argument<'a, S> {
-        if let Some(docstring) = clean_docstring(multiline) {
-            match &mut self.description {
-                &mut Some(ref mut desc) => {
-                    desc.push('\n');
-                    desc.push_str(&docstring);
-                }
-                desc @ &mut None => *desc = Some(docstring),
-            }
-        }
-        self
-    }
-
     /// Set the default value of the argument
     ///
-    /// This overwrites the description if any was previously set.
+    /// This overwrites the default value if any was previously set.
     pub fn default_value(mut self, default_value: InputValue<S>) -> Self {
         self.default_value = Some(default_value);
         self
@@ -765,39 +751,6 @@ impl<'a, S: fmt::Debug> fmt::Debug for InputObjectMeta<'a, S> {
 fn try_parse_fn<S, T>(v: &InputValue<S>) -> bool
 where
     T: FromInputValue<S>,
-    for<'b> &'b S: ScalarRefValue<'b>,
 {
     <T as FromInputValue<S>>::from_input_value(v).is_some()
-}
-
-fn clean_docstring(multiline: &[&str]) -> Option<String> {
-    if multiline.is_empty() {
-        return None;
-    }
-    let trim_start = multiline
-        .iter()
-        .filter_map(|ln| ln.chars().position(|ch| !ch.is_whitespace()))
-        .min()
-        .unwrap_or(0);
-    Some(
-        multiline
-            .iter()
-            .enumerate()
-            .flat_map(|(line, ln)| {
-                let new_ln = if !ln.chars().next().map(char::is_whitespace).unwrap_or(false) {
-                    ln.trim_end() // skip trimming the first line
-                } else if ln.len() >= trim_start {
-                    ln[trim_start..].trim_end()
-                } else {
-                    ""
-                };
-                new_ln.chars().chain(
-                    ['\n']
-                        .iter()
-                        .take_while(move |_| line < multiline.len() - 1)
-                        .cloned(),
-                )
-            })
-            .collect::<String>(),
-    )
 }

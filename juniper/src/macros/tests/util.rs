@@ -1,26 +1,41 @@
-use crate::{DefaultScalarValue, GraphQLType, RootNode, Value, Variables};
-use std::default::Default;
+use crate::{DefaultScalarValue, GraphQLType, GraphQLTypeAsync, RootNode, Value, Variables};
 
-pub fn run_query<Query, Mutation, Context>(query: &str) -> Value
+pub async fn run_query<Query, Mutation, Subscription>(query: &str) -> Value
 where
-    Query: GraphQLType<DefaultScalarValue, TypeInfo = (), Context = Context> + Default,
-    Mutation: GraphQLType<DefaultScalarValue, TypeInfo = (), Context = Context> + Default,
-    Context: Default,
+    Query: GraphQLTypeAsync<DefaultScalarValue, TypeInfo = ()> + Default,
+    Query::Context: Default + Sync,
+    Mutation:
+        GraphQLTypeAsync<DefaultScalarValue, TypeInfo = (), Context = Query::Context> + Default,
+    Subscription:
+        GraphQLType<DefaultScalarValue, TypeInfo = (), Context = Query::Context> + Default + Sync,
 {
-    let schema = RootNode::new(Query::default(), Mutation::default());
-    let (result, errs) =
-        crate::execute(query, None, &schema, &Variables::new(), &Context::default())
-            .expect("Execution failed");
+    let schema = RootNode::new(
+        Query::default(),
+        Mutation::default(),
+        Subscription::default(),
+    );
+    let (result, errs) = crate::execute(
+        query,
+        None,
+        &schema,
+        &Variables::new(),
+        &Query::Context::default(),
+    )
+    .await
+    .expect("Execution failed");
 
     assert_eq!(errs, []);
     result
 }
 
-pub fn run_info_query<Query, Mutation, Context>(type_name: &str) -> Value
+pub async fn run_info_query<Query, Mutation, Subscription>(type_name: &str) -> Value
 where
-    Query: GraphQLType<DefaultScalarValue, TypeInfo = (), Context = Context> + Default,
-    Mutation: GraphQLType<DefaultScalarValue, TypeInfo = (), Context = Context> + Default,
-    Context: Default,
+    Query: GraphQLTypeAsync<DefaultScalarValue, TypeInfo = ()> + Default,
+    Query::Context: Default + Sync,
+    Mutation:
+        GraphQLTypeAsync<DefaultScalarValue, TypeInfo = (), Context = Query::Context> + Default,
+    Subscription:
+        GraphQLType<DefaultScalarValue, TypeInfo = (), Context = Query::Context> + Default + Sync,
 {
     let query = format!(
         r#"
@@ -44,7 +59,7 @@ where
     "#,
         type_name
     );
-    let result = run_query::<Query, Mutation, Context>(&query);
+    let result = run_query::<Query, Mutation, Subscription>(&query).await;
     result
         .as_object_value()
         .expect("Result is not an object")

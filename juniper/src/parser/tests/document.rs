@@ -4,26 +4,30 @@ use crate::{
     },
     parser::{document::parse_document_source, ParseError, SourcePosition, Spanning, Token},
     schema::model::SchemaType,
-    types::scalars::EmptyMutation,
-    validation::test_harness::{MutationRoot, QueryRoot},
-    value::{DefaultScalarValue, ScalarRefValue, ScalarValue},
+    types::scalars::{EmptyMutation, EmptySubscription},
+    validation::test_harness::{MutationRoot, QueryRoot, SubscriptionRoot},
+    value::{DefaultScalarValue, ScalarValue},
 };
 
 fn parse_document<S>(s: &str) -> Document<S>
 where
     S: ScalarValue,
-    for<'b> &'b S: ScalarRefValue<'b>,
 {
-    parse_document_source(s, &SchemaType::new::<QueryRoot, MutationRoot>(&(), &()))
-        .expect(&format!("Parse error on input {:#?}", s))
+    parse_document_source(
+        s,
+        &SchemaType::new::<QueryRoot, MutationRoot, SubscriptionRoot>(&(), &(), &()),
+    )
+    .expect(&format!("Parse error on input {:#?}", s))
 }
 
 fn parse_document_error<'a, S>(s: &'a str) -> Spanning<ParseError<'a>>
 where
     S: ScalarValue,
-    for<'b> &'b S: ScalarRefValue<'b>,
 {
-    match parse_document_source::<S>(s, &SchemaType::new::<QueryRoot, MutationRoot>(&(), &())) {
+    match parse_document_source::<S>(
+        s,
+        &SchemaType::new::<QueryRoot, MutationRoot, SubscriptionRoot>(&(), &(), &()),
+    ) {
         Ok(doc) => panic!("*No* parse error on input {:#?} =>\n{:#?}", s, doc),
         Err(err) => err,
     }
@@ -151,14 +155,18 @@ fn errors() {
 fn issue_427_panic_is_not_expected() {
     struct QueryWithoutFloat;
 
-    #[crate::object_internal]
+    #[crate::graphql_object]
     impl QueryWithoutFloat {
         fn echo(value: String) -> String {
             value
         }
     }
 
-    let schema = SchemaType::new::<QueryWithoutFloat, EmptyMutation<()>>(&(), &());
+    let schema = <SchemaType<DefaultScalarValue>>::new::<
+        QueryWithoutFloat,
+        EmptyMutation<()>,
+        EmptySubscription<()>,
+    >(&(), &(), &());
     let parse_result = parse_document_source(r##"{ echo(value: 123.0) }"##, &schema);
 
     assert_eq!(

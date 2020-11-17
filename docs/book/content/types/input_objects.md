@@ -5,6 +5,8 @@ GraphQL fields. In Juniper, you can define input objects using a custom derive
 attribute, similar to simple objects and enums:
 
 ```rust
+# #![allow(unused_variables)]
+# extern crate juniper;
 #[derive(juniper::GraphQLInputObject)]
 struct Coordinate {
     latitude: f64,
@@ -14,7 +16,7 @@ struct Coordinate {
 struct Root;
 # #[derive(juniper::GraphQLObject)] struct User { name: String }
 
-#[juniper::object]
+#[juniper::graphql_object]
 impl Root {
     fn users_at_location(coordinate: Coordinate, radius: f64) -> Vec<User> {
         // Send coordinate to database
@@ -32,6 +34,8 @@ Just like the [other](objects/defining_objects.md) [derives](enums.md), you can 
 and add documentation to both the type and the fields:
 
 ```rust
+# #![allow(unused_variables)]
+# extern crate juniper;
 #[derive(juniper::GraphQLInputObject)]
 #[graphql(name="Coordinate", description="A position on the globe")]
 struct WorldCoordinate {
@@ -45,7 +49,7 @@ struct WorldCoordinate {
 struct Root;
 # #[derive(juniper::GraphQLObject)] struct User { name: String }
 
-#[juniper::object]
+#[juniper::graphql_object]
 impl Root {
     fn users_at_location(coordinate: WorldCoordinate, radius: f64) -> Vec<User> {
         // Send coordinate to database

@@ -2,7 +2,6 @@
 
 > GraphQL server library for Rust
 
-[![Build Status](https://travis-ci.org/graphql-rust/juniper.svg?branch=master)](https://travis-ci.org/graphql-rust/juniper)
 [![Build Status](https://dev.azure.com/graphql-rust/GraphQL%20Rust/_apis/build/status/graphql-rust.juniper)](https://dev.azure.com/graphql-rust/GraphQL%20Rust/_build/latest?definitionId=1)
 [![codecov](https://codecov.io/gh/graphql-rust/juniper/branch/master/graph/badge.svg)](https://codecov.io/gh/graphql-rust/juniper)
 [![Crates.io](https://img.shields.io/crates/v/juniper.svg?maxAge=2592000)](https://crates.io/crates/juniper)
@@ -15,11 +14,11 @@ serve mobile and web application frontends.
 
 _Juniper_ makes it possible to write GraphQL servers in Rust that are
 type-safe and blazingly fast. We also try to make declaring and resolving
-GraphQL schemas as convenient as possible as Rust will allow.
+GraphQL schemas as convenient as Rust will allow.
 
 Juniper does not include a web server - instead it provides building blocks to
 make integration with existing servers straightforward. It optionally provides a
-pre-built integration for the [Hyper][hyper], [Iron][iron], [Rocket], and [Warp][warp] frameworks, including
+pre-built integration for the [Actix][actix], [Hyper][hyper], [Iron][iron], [Rocket], and [Warp][warp] frameworks, including
 embedded [Graphiql][graphiql] and [GraphQL Playground][playground] for easy debugging.
 
 - [Cargo crate](https://crates.io/crates/juniper)
@@ -40,22 +39,23 @@ To get started quickly and get a feel for Juniper, check out the
 For specific information about macros, types and the Juniper api, the
 [API Reference][docsrs] is the best place to look.
 
-You can also check out [src/tests/schema.rs][test_schema_rs] to see a complex
-schema including polymorphism with traits and interfaces.
+You can also check out the [Star Wars schema][test_schema_rs] to see a complex
+example including polymorphism with traits and interfaces.
 For an example of web framework integration,
-see the [hyper][hyper_examples], [rocket][rocket_examples], [iron][iron_examples], and [warp][warp_examples] examples folders.
+see the [actix][actix_examples], [hyper][hyper_examples], [rocket][rocket_examples], [iron][iron_examples], and [warp][warp_examples] examples folders.
 
 ## Features
 
 Juniper supports the full GraphQL query language according to the
 [specification][graphql_spec], including interfaces, unions, schema
-introspection, and validations.
-It does not, however, support the schema language. Consider using [juniper-from-schema][] for generating code from a schema file.
+introspection, and validations. It can also output the schema in the [GraphQL Schema Language][schema_language].
 
 As an exception to other GraphQL libraries for other languages, Juniper builds
 non-null types by default. A field of type `Vec<Episode>` will be converted into
 `[Episode!]!`. The corresponding Rust type for e.g. `[Episode]` would be
 `Option<Vec<Option<Episode>>>`.
+
+Juniper follows a [code-first approach][schema_approach] to defining GraphQL schemas. If you would like to use a [schema-first approach][schema_approach] instead, consider [juniper-from-schema][] for generating code from a schema file.
 
 ## Integrations
 
@@ -68,9 +68,12 @@ your Schemas automatically.
 - [uuid][uuid]
 - [url][url]
 - [chrono][chrono]
+- [chrono-tz][chrono-tz]
+- [bson][bson]
 
 ### Web Frameworks
 
+- [actix][actix]
 - [hyper][hyper]
 - [rocket][rocket]
 - [iron][iron]
@@ -84,13 +87,17 @@ your Schemas automatically.
 
 Juniper has not reached 1.0 yet, thus some API instability should be expected.
 
+[actix]: https://actix.rs/
 [graphql]: http://graphql.org
 [graphiql]: https://github.com/graphql/graphiql
 [playground]: https://github.com/prisma/graphql-playground
 [iron]: http://ironframework.io
 [graphql_spec]: http://facebook.github.io/graphql
-[test_schema_rs]: https://github.com/graphql-rust/juniper/blob/master/juniper/src/tests/schema.rs
+[schema_language]: https://graphql.org/learn/schema/#type-language
+[schema_approach]: https://blog.logrocket.com/code-first-vs-schema-first-development-graphql/
+[test_schema_rs]: https://github.com/graphql-rust/juniper/blob/master/juniper/src/tests/fixtures/starwars/schema.rs
 [tokio]: https://github.com/tokio-rs/tokio
+[actix_examples]: https://github.com/graphql-rust/juniper/tree/master/juniper_actix/examples
 [hyper_examples]: https://github.com/graphql-rust/juniper/tree/master/juniper_hyper/examples
 [rocket_examples]: https://github.com/graphql-rust/juniper/tree/master/juniper_rocket/examples
 [iron_examples]: https://github.com/graphql-rust/juniper/tree/master/juniper_iron/examples
@@ -106,4 +113,6 @@ Juniper has not reached 1.0 yet, thus some API instability should be expected.
 [uuid]: https://crates.io/crates/uuid
 [url]: https://crates.io/crates/url
 [chrono]: https://crates.io/crates/chrono
+[chrono-tz]: https://crates.io/crates/chrono-tz
+[bson]: https://crates.io/crates/bson
 [juniper-from-schema]: https://github.com/davidpdrsn/juniper-from-schema

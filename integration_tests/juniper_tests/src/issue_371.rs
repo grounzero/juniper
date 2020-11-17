@@ -1,5 +1,8 @@
 // Original author of this test is <https://github.com/davidpdrsn>.
-use juniper::*;
+
+use juniper::{
+    graphql_object, EmptyMutation, EmptySubscription, LookAheadMethods as _, RootNode, Variables,
+};
 
 pub struct Context;
 
@@ -7,42 +10,45 @@ impl juniper::Context for Context {}
 
 pub struct Query;
 
-graphql_object!(Query: Context |&self| {
-    field users(&executor) -> Vec<User> {
-        let lh = executor.look_ahead();
+#[graphql_object(context = Context)]
+impl Query {
+    fn users(exec: &Executor) -> Vec<User> {
+        let lh = exec.look_ahead();
         assert_eq!(lh.field_name(), "users");
         vec![User]
     }
 
-    field countries(&executor) -> Vec<Country> {
-        let lh = executor.look_ahead();
+    fn countries(exec: &Executor) -> Vec<Country> {
+        let lh = exec.look_ahead();
         assert_eq!(lh.field_name(), "countries");
         vec![Country]
     }
-});
+}
 
 #[derive(Clone)]
 pub struct User;
 
-graphql_object!(User: Context |&self| {
-    field id() -> i32 {
+#[graphql_object(context = Context)]
+impl User {
+    fn id() -> i32 {
         1
     }
-});
+}
 
 #[derive(Clone)]
 pub struct Country;
 
-graphql_object!(Country: Context |&self| {
-    field id() -> i32 {
+#[graphql_object]
+impl Country {
+    fn id() -> i32 {
         2
     }
-});
+}
 
-type Schema = juniper::RootNode<'static, Query, EmptyMutation<Context>>;
+type Schema = RootNode<'static, Query, EmptyMutation<Context>, EmptySubscription<Context>>;
 
-#[test]
-fn users() {
+#[tokio::test]
+async fn users() {
     let ctx = Context;
 
     let query = r#"{ users { id } }"#;
@@ -50,17 +56,22 @@ fn users() {
     let (_, errors) = juniper::execute(
         query,
         None,
-        &Schema::new(Query, EmptyMutation::<Context>::new()),
+        &Schema::new(
+            Query,
+            EmptyMutation::<Context>::new(),
+            EmptySubscription::<Context>::new(),
+        ),
         &juniper::Variables::new(),
         &ctx,
     )
+    .await
     .unwrap();
 
     assert_eq!(errors.len(), 0);
 }
 
-#[test]
-fn countries() {
+#[tokio::test]
+async fn countries() {
     let ctx = Context;
 
     let query = r#"{ countries { id } }"#;
@@ -68,17 +79,18 @@ fn countries() {
     let (_, errors) = juniper::execute(
         query,
         None,
-        &Schema::new(Query, EmptyMutation::new()),
+        &Schema::new(Query, EmptyMutation::new(), EmptySubscription::new()),
         &juniper::Variables::new(),
         &ctx,
     )
+    .await
     .unwrap();
 
     assert_eq!(errors.len(), 0);
 }
 
-#[test]
-fn both() {
+#[tokio::test]
+async fn both() {
     let ctx = Context;
 
     let query = r#"
@@ -91,17 +103,22 @@ fn both() {
     let (_, errors) = juniper::execute(
         query,
         None,
-        &Schema::new(Query, EmptyMutation::<Context>::new()),
-        &juniper::Variables::new(),
+        &Schema::new(
+            Query,
+            EmptyMutation::<Context>::new(),
+            EmptySubscription::<Context>::new(),
+        ),
+        &Variables::new(),
         &ctx,
     )
+    .await
     .unwrap();
 
     assert_eq!(errors.len(), 0);
 }
 
-#[test]
-fn both_in_different_order() {
+#[tokio::test]
+async fn both_in_different_order() {
     let ctx = Context;
 
     let query = r#"
@@ -114,10 +131,15 @@ fn both_in_different_order() {
     let (_, errors) = juniper::execute(
         query,
         None,
-        &Schema::new(Query, EmptyMutation::<Context>::new()),
-        &juniper::Variables::new(),
+        &Schema::new(
+            Query,
+            EmptyMutation::<Context>::new(),
+            EmptySubscription::<Context>::new(),
+        ),
+        &Variables::new(),
         &ctx,
     )
+    .await
     .unwrap();
 
     assert_eq!(errors.len(), 0);

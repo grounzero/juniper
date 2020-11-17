@@ -2,13 +2,15 @@
 
 This page will give you a short introduction to the concepts in Juniper.
 
+Juniper follows a [code-first approach][schema_approach] to defining GraphQL schemas. If you would like to use a [schema-first approach][schema_approach] instead, consider [juniper-from-schema][] for generating code from a schema file.
+
 ## Installation
 
 !FILENAME Cargo.toml
 
 ```toml
 [dependencies]
-juniper = "0.11"
+juniper = { git = "https://github.com/graphql-rust/juniper" }
 ```
 
 ## Schema example
@@ -20,12 +22,18 @@ naturally map to GraphQL features, such as `Option<T>`, `Vec<T>`, `Box<T>`,
 
 For more advanced mappings, Juniper provides multiple macros to map your Rust
 types to a GraphQL schema. The most important one is the
-[object][jp_object] procedural macro that is used for declaring an object with
+[graphql_object][graphql_object] procedural macro that is used for declaring an object with
 resolvers, which you will use for the `Query` and `Mutation` roots.
 
 ```rust
-use juniper::{FieldResult};
-
+# #![allow(unused_variables)]
+# extern crate juniper;
+# use std::fmt::Display;
+use juniper::{
+    graphql_object, EmptySubscription, FieldResult, GraphQLEnum, 
+    GraphQLInputObject, GraphQLObject, ScalarValue,
+};
+#
 # struct DatabasePool;
 # impl DatabasePool {
 #     fn get_connection(&self) -> FieldResult<DatabasePool> { Ok(DatabasePool) }
@@ -33,15 +41,15 @@ use juniper::{FieldResult};
 #     fn insert_human(&self, _human: &NewHuman) -> FieldResult<Human> { Err("")? }
 # }
 
-#[derive(juniper::GraphQLEnum)]
+#[derive(GraphQLEnum)]
 enum Episode {
     NewHope,
     Empire,
     Jedi,
 }
 
-#[derive(juniper::GraphQLObject)]
-#[graphql(description="A humanoid creature in the Star Wars universe")]
+#[derive(GraphQLObject)]
+#[graphql(description = "A humanoid creature in the Star Wars universe")]
 struct Human {
     id: String,
     name: String,
@@ -51,8 +59,8 @@ struct Human {
 
 // There is also a custom derive for mapping GraphQL input objects.
 
-#[derive(juniper::GraphQLInputObject)]
-#[graphql(description="A humanoid creature in the Star Wars universe")]
+#[derive(GraphQLInputObject)]
+#[graphql(description = "A humanoid creature in the Star Wars universe")]
 struct NewHuman {
     name: String,
     appears_in: Vec<Episode>,
@@ -74,14 +82,13 @@ impl juniper::Context for Context {}
 
 struct Query;
 
-#[juniper::object(
+#[graphql_object(
     // Here we specify the context type for the object.
     // We need to do this in every type that
     // needs access to the context.
-    Context = Context,
+    context = Context,
 )]
 impl Query {
-
     fn apiVersion() -> &str {
         "1.0"
     }
@@ -105,24 +112,28 @@ impl Query {
 
 struct Mutation;
 
-#[juniper::object(
-    Context = Context,
-)]
-impl Mutation {
+#[graphql_object(
+    context = Context,
 
-    fn createHuman(context: &Context, new_human: NewHuman) -> FieldResult<Human> {
-        let db = executor.context().pool.get_connection()?;
-        let human: Human = db.insert_human(&new_human)?;
+    // If we need to use `ScalarValue` parametrization explicitly somewhere
+    // in the object definition (like here in `FieldResult`), we should
+    // declare an explicit type parameter for that, and specify it.
+    scalar = S,
+)]
+impl<S: ScalarValue + Display> Mutation {
+    fn createHuman(context: &Context, new_human: NewHuman) -> FieldResult<Human, S> {
+        let db = context.pool.get_connection().map_err(|e| e.map_scalar_value())?;
+        let human: Human = db.insert_human(&new_human).map_err(|e| e.map_scalar_value())?;
         Ok(human)
     }
 }
 
-// A root schema consists of a query and a mutation.
+// A root schema consists of a query, a mutation, and a subscription.
 // Request queries can be executed against a RootNode.
-type Schema = juniper::RootNode<'static, Query, Mutation>;
-
+type Schema = juniper::RootNode<'static, Query, Mutation, EmptySubscription<Context>>;
+#
 # fn main() {
-#   let _ = Schema::new(Query, Mutation{});
+#   let _ = Schema::new(Query, Mutation{}, EmptySubscription::new());
 # }
 ```
 
@@ -130,7 +141,7 @@ We now have a very simple but functional schema for a GraphQL server!
 
 To actually serve the schema, see the guides for our various [server integrations](./servers/index.md).
 
-You can also invoke the executor directly to get a result for a query:
+Juniper is a library that can be used in many contexts--it does not require a server and it does not have a dependency on a particular transport or serialization format. You can invoke the executor directly to get a result for a query:
 
 ## Executor
 
@@ -139,10 +150,12 @@ You can invoke `juniper::execute` directly to run a GraphQL query:
 ```rust
 # // Only needed due to 2018 edition because the macro is not accessible.
 # #[macro_use] extern crate juniper;
-use juniper::{FieldResult, Variables, EmptyMutation};
+use juniper::{
+    graphql_object, EmptyMutation, EmptySubscription, FieldResult, 
+    GraphQLEnum, Variables,
+};
 
-
-#[derive(juniper::GraphQLEnum, Clone, Copy)]
+#[derive(GraphQLEnum, Clone, Copy)]
 enum Episode {
     NewHope,
     Empire,
@@ -156,29 +169,26 @@ impl juniper::Context for Ctx {}
 
 struct Query;
 
-#[juniper::object(
-    Context = Ctx,
-)]
+#[graphql_object(context = Ctx)]
 impl Query {
     fn favoriteEpisode(context: &Ctx) -> FieldResult<Episode> {
         Ok(context.0)
     }
 }
 
-
-// A root schema consists of a query and a mutation.
+// A root schema consists of a query, a mutation, and a subscription.
 // Request queries can be executed against a RootNode.
-type Schema = juniper::RootNode<'static, Query, EmptyMutation<Ctx>>;
+type Schema = juniper::RootNode<'static, Query, EmptyMutation<Ctx>, EmptySubscription<Ctx>>;
 
 fn main() {
     // Create a context object.
     let ctx = Ctx(Episode::NewHope);
 
     // Run the executor.
-    let (res, _errors) = juniper::execute(
+    let (res, _errors) = juniper::execute_sync(
         "query { favoriteEpisode }",
         None,
-        &Schema::new(Query, EmptyMutation::new()),
+        &Schema::new(Query, EmptyMutation::new(), EmptySubscription::new()),
         &Variables::new(),
         &ctx,
     ).unwrap();
@@ -193,9 +203,11 @@ fn main() {
 }
 ```
 
+[juniper-from-schema]: https://github.com/davidpdrsn/juniper-from-schema
+[schema_approach]: https://blog.logrocket.com/code-first-vs-schema-first-development-graphql/
 [hyper]: servers/hyper.md
 [warp]: servers/warp.md
 [rocket]: servers/rocket.md
 [iron]: servers/iron.md
 [tutorial]: ./tutorial.html
-[jp_obj_macro]: https://docs.rs/juniper/latest/juniper/macro.object.html
+[graphql_object]: https://docs.rs/juniper/latest/juniper/macro.graphql_object.html

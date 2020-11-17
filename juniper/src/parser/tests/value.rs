@@ -1,21 +1,15 @@
 use indexmap::IndexMap;
 
-use juniper_codegen::{
-    GraphQLEnumInternal as GraphQLEnum, GraphQLInputObjectInternal as GraphQLInputObject,
-};
-
 use crate::{
     ast::{FromInputValue, InputValue, Type},
     parser::{value::parse_value_literal, Lexer, Parser, SourcePosition, Spanning},
-    value::{DefaultScalarValue, ParseScalarValue, ScalarRefValue, ScalarValue},
-};
-
-use crate::{
     schema::{
         meta::{Argument, EnumMeta, EnumValue, InputObjectMeta, MetaType, ScalarMeta},
         model::SchemaType,
     },
-    types::scalars::EmptyMutation,
+    types::scalars::{EmptyMutation, EmptySubscription},
+    value::{DefaultScalarValue, ParseScalarValue, ScalarValue},
+    GraphQLEnum, GraphQLInputObject,
 };
 
 #[derive(GraphQLEnum)]
@@ -36,7 +30,7 @@ struct Foo {
 
 struct Query;
 
-#[crate::object_internal(Scalar = S)]
+#[crate::graphql_object(Scalar = S)]
 impl<'a, S> Query
 where
     S: crate::ScalarValue + 'a,
@@ -72,11 +66,10 @@ where
 fn parse_value<S>(s: &str, meta: &MetaType<S>) -> Spanning<InputValue<S>>
 where
     S: ScalarValue,
-    for<'a> &'a S: ScalarRefValue<'a>,
 {
     let mut lexer = Lexer::new(s);
     let mut parser = Parser::new(&mut lexer).expect(&format!("Lexer error on input {:#?}", s));
-    let schema = SchemaType::new::<Query, EmptyMutation<()>>(&(), &());
+    let schema = SchemaType::new::<Query, EmptyMutation<()>, EmptySubscription<()>>(&(), &(), &());
 
     parse_value_literal(&mut parser, false, &schema, Some(meta))
         .expect(&format!("Parse error on input {:#?}", s))

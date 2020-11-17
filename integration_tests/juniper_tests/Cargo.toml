@@ -1,10 +1,16 @@
 [package]
 name = "juniper_tests"
 version = "0.1.0"
-publish = false
 edition = "2018"
+publish = false
+
+[dependencies]
+derive_more = "0.99"
+futures = "0.3"
+juniper = { path = "../../juniper" }
 
 [dev-dependencies]
-juniper = { path = "../../juniper" }
-serde_json = { version = "1" }
-fnv = "1.0.3"
+async-trait = "0.1.39"
+serde_json = "1.0"
+fnv = "1.0"
+tokio = { version = "0.2", features = ["macros", "rt-core", "time"] }

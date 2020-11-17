@@ -1,5 +1,5 @@
 use super::util;
-use crate::{graphql_value, EmptyMutation, RootNode};
+use crate::{graphql_value, EmptyMutation, EmptySubscription, RootNode};
 
 #[derive(Default)]
 struct Context {
@@ -12,7 +12,7 @@ struct WithLifetime<'a> {
     value: &'a str,
 }
 
-#[crate::object_internal(Context=Context)]
+#[crate::graphql_object(Context=Context)]
 impl<'a> WithLifetime<'a> {
     fn value(&'a self) -> &'a str {
         self.value
@@ -21,7 +21,7 @@ impl<'a> WithLifetime<'a> {
 
 struct WithContext;
 
-#[crate::object_internal(Context=Context)]
+#[crate::graphql_object(Context=Context)]
 impl WithContext {
     fn ctx(ctx: &Context) -> bool {
         ctx.flag1
@@ -33,10 +33,12 @@ struct Query {
     b: bool,
 }
 
-#[crate::object_internal(
+#[crate::graphql_object(
     scalar = crate::DefaultScalarValue,
     name = "Query", 
     context = Context,
+    // FIXME: make async work
+    noasync
 )]
 /// Query Description.
 impl<'a> Query {
@@ -113,16 +115,26 @@ impl<'a> Query {
 #[derive(Default)]
 struct Mutation;
 
-#[crate::object_internal(context = Context)]
+#[crate::graphql_object(context = Context)]
 impl Mutation {
     fn empty() -> bool {
         true
     }
 }
 
-#[test]
-fn object_introspect() {
-    let res = util::run_info_query::<Query, Mutation, Context>("Query");
+#[derive(Default)]
+struct Subscription;
+
+#[crate::graphql_object(context = Context)]
+impl Subscription {
+    fn empty() -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn object_introspect() {
+    let res = util::run_info_query::<Query, Mutation, Subscription>("Query").await;
     assert_eq!(
         res,
         crate::graphql_value!({
@@ -241,8 +253,8 @@ fn object_introspect() {
     );
 }
 
-#[test]
-fn object_query() {
+#[tokio::test]
+async fn object_query() {
     let doc = r#"
     query {
         withSelf
@@ -264,10 +276,15 @@ fn object_query() {
         withMutArg(arg: true)
     }
     "#;
-    let schema = RootNode::new(Query { b: true }, EmptyMutation::<Context>::new());
+    let schema = RootNode::new(
+        Query { b: true },
+        EmptyMutation::<Context>::new(),
+        EmptySubscription::<Context>::new(),
+    );
     let vars = std::collections::HashMap::new();
 
     let (result, errs) = crate::execute(doc, None, &schema, &vars, &Context { flag1: true })
+        .await
         .expect("Execution failed");
     assert_eq!(errs, []);
     assert_eq!(

@@ -1,14 +1,20 @@
+mod object;
+mod scalar;
+
+use std::{
+    any::TypeId,
+    fmt::{self, Display, Formatter},
+    mem,
+};
+
 use crate::{
     ast::{InputValue, ToInputValue},
     parser::Spanning,
 };
-mod object;
-mod scalar;
 
-pub use self::object::Object;
-
-pub use self::scalar::{
-    DefaultScalarValue, ParseScalarResult, ParseScalarValue, ScalarRefValue, ScalarValue,
+pub use self::{
+    object::Object,
+    scalar::{DefaultScalarValue, ParseScalarResult, ParseScalarValue, ScalarValue},
 };
 
 /// Serializable value returned from query and field execution.
@@ -29,15 +35,12 @@ pub enum Value<S = DefaultScalarValue> {
     Object(Object<S>),
 }
 
-impl<S> Value<S>
-where
-    S: ScalarValue,
-{
+impl<S: ScalarValue> Value<S> {
     // CONSTRUCTORS
 
     /// Construct a null value.
     pub fn null() -> Self {
-        Value::Null
+        Self::Null
     }
 
     /// Construct an integer value.
@@ -66,12 +69,12 @@ where
 
     /// Construct a list value.
     pub fn list(l: Vec<Self>) -> Self {
-        Value::List(l)
+        Self::List(l)
     }
 
     /// Construct an object value.
     pub fn object(o: Object<S>) -> Self {
-        Value::Object(o)
+        Self::Object(o)
     }
 
     /// Construct a scalar value
@@ -79,7 +82,7 @@ where
     where
         T: Into<S>,
     {
-        Value::Scalar(s.into())
+        Self::Scalar(s.into())
     }
 
     // DISCRIMINATORS
@@ -87,7 +90,7 @@ where
     /// Does this value represent null?
     pub fn is_null(&self) -> bool {
         match *self {
-            Value::Null => true,
+            Self::Null => true,
             _ => false,
         }
     }
@@ -98,24 +101,33 @@ where
         &'a S: Into<Option<&'a T>>,
     {
         match *self {
-            Value::Scalar(ref s) => s.into(),
+            Self::Scalar(ref s) => s.into(),
             _ => None,
         }
     }
 
     /// View the underlying float value, if present.
-    #[deprecated(since = "0.11.0", note = "Use `Value::as_scalar_value` instead")]
-    pub fn as_float_value(&self) -> Option<f64>
-    where
-        for<'a> &'a S: ScalarRefValue<'a>,
-    {
-        self.as_scalar_value::<f64>().cloned()
+    pub fn as_float_value(&self) -> Option<f64> {
+        match self {
+            Self::Scalar(ref s) => s.as_float(),
+            _ => None,
+        }
     }
 
     /// View the underlying object value, if present.
     pub fn as_object_value(&self) -> Option<&Object<S>> {
         match *self {
-            Value::Object(ref o) => Some(o),
+            Self::Object(ref o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Convert this value into an Object.
+    ///
+    /// Returns None if value is not an Object.
+    pub fn into_object(self) -> Option<Object<S>> {
+        match self {
+            Self::Object(o) => Some(o),
             _ => None,
         }
     }
@@ -123,7 +135,7 @@ where
     /// Mutable view into the underlying object value, if present.
     pub fn as_mut_object_value(&mut self) -> Option<&mut Object<S>> {
         match *self {
-            Value::Object(ref mut o) => Some(o),
+            Self::Object(ref mut o) => Some(o),
             _ => None,
         }
     }
@@ -131,7 +143,7 @@ where
     /// View the underlying list value, if present.
     pub fn as_list_value(&self) -> Option<&Vec<Self>> {
         match *self {
-            Value::List(ref l) => Some(l),
+            Self::List(ref l) => Some(l),
             _ => None,
         }
     }
@@ -139,18 +151,38 @@ where
     /// View the underlying scalar value, if present
     pub fn as_scalar(&self) -> Option<&S> {
         match *self {
-            Value::Scalar(ref s) => Some(s),
+            Self::Scalar(ref s) => Some(s),
             _ => None,
         }
     }
 
     /// View the underlying string value, if present.
-    #[deprecated(since = "0.11.0", note = "Use `Value::as_scalar_value` instead")]
     pub fn as_string_value<'a>(&'a self) -> Option<&'a str>
     where
         Option<&'a String>: From<&'a S>,
     {
         self.as_scalar_value::<String>().map(|s| s as &str)
+    }
+
+    /// Maps the [`ScalarValue`] type of this [`Value`] into the specified one.
+    pub fn map_scalar_value<Into: ScalarValue>(self) -> Value<Into> {
+        if TypeId::of::<Into>() == TypeId::of::<S>() {
+            // This is totally safe, because we're transmuting the value into itself,
+            // so no invariants may change and we're just satisfying the type checker.
+            let val = mem::ManuallyDrop::new(self);
+            unsafe { mem::transmute_copy(&*val) }
+        } else {
+            match self {
+                Self::Null => Value::Null,
+                Self::Scalar(s) => Value::Scalar(s.into_another()),
+                Self::List(l) => Value::List(l.into_iter().map(Value::map_scalar_value).collect()),
+                Self::Object(o) => Value::Object(
+                    o.into_iter()
+                        .map(|(k, v)| (k, v.map_scalar_value()))
+                        .collect(),
+                ),
+            }
+        }
     }
 }
 
@@ -174,6 +206,46 @@ impl<S: ScalarValue> ToInputValue<S> for Value<S> {
                     })
                     .collect(),
             ),
+        }
+    }
+}
+
+impl<S: ScalarValue> Display for Value<S> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Value::Null => write!(f, "null"),
+            Value::Scalar(s) => {
+                if let Some(string) = s.as_string() {
+                    write!(f, "\"{}\"", string)
+                } else {
+                    write!(f, "{}", s)
+                }
+            }
+            Value::List(list) => {
+                write!(f, "[")?;
+                for (idx, item) in list.iter().enumerate() {
+                    write!(f, "{}", item)?;
+                    if idx < list.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, "]")?;
+
+                Ok(())
+            }
+            Value::Object(obj) => {
+                write!(f, "{{")?;
+                for (idx, (key, value)) in obj.iter().enumerate() {
+                    write!(f, "\"{}\": {}", key, value)?;
+
+                    if idx < obj.field_count() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, "}}")?;
+
+                Ok(())
+            }
         }
     }
 }
@@ -244,11 +316,12 @@ where
 /// Here are some examples; the resulting JSON will look just like what you
 /// passed in.
 /// ```rust
-/// extern crate juniper;
 /// # use juniper::{Value, DefaultScalarValue, graphql_value};
 /// # type V = Value<DefaultScalarValue>;
-///
+/// #
 /// # fn main() {
+/// # let _: V =
+/// graphql_value!(None);
 /// # let _: V =
 /// graphql_value!(1234);
 /// # let _: V =
@@ -344,5 +417,83 @@ mod tests {
                     .collect(),
             )
         );
+    }
+
+    #[test]
+    fn display_null() {
+        let s: Value<DefaultScalarValue> = graphql_value!(None);
+        assert_eq!("null", format!("{}", s));
+    }
+
+    #[test]
+    fn display_int() {
+        let s: Value<DefaultScalarValue> = graphql_value!(123);
+        assert_eq!("123", format!("{}", s));
+    }
+
+    #[test]
+    fn display_float() {
+        let s: Value<DefaultScalarValue> = graphql_value!(123.456);
+        assert_eq!("123.456", format!("{}", s));
+    }
+
+    #[test]
+    fn display_string() {
+        let s: Value<DefaultScalarValue> = graphql_value!("foo");
+        assert_eq!("\"foo\"", format!("{}", s));
+    }
+
+    #[test]
+    fn display_bool() {
+        let s: Value<DefaultScalarValue> = graphql_value!(false);
+        assert_eq!("false", format!("{}", s));
+
+        let s: Value<DefaultScalarValue> = graphql_value!(true);
+        assert_eq!("true", format!("{}", s));
+    }
+
+    #[test]
+    fn display_list() {
+        let s: Value<DefaultScalarValue> = graphql_value!([1, None, "foo"]);
+        assert_eq!("[1, null, \"foo\"]", format!("{}", s));
+    }
+
+    #[test]
+    fn display_list_one_element() {
+        let s: Value<DefaultScalarValue> = graphql_value!([1]);
+        assert_eq!("[1]", format!("{}", s));
+    }
+
+    #[test]
+    fn display_list_empty() {
+        let s: Value<DefaultScalarValue> = graphql_value!([]);
+        assert_eq!("[]", format!("{}", s));
+    }
+
+    #[test]
+    fn display_object() {
+        let s: Value<DefaultScalarValue> = graphql_value!({
+            "int": 1,
+            "null": None,
+            "string": "foo",
+        });
+        assert_eq!(
+            r#"{"int": 1, "null": null, "string": "foo"}"#,
+            format!("{}", s)
+        );
+    }
+
+    #[test]
+    fn display_object_one_field() {
+        let s: Value<DefaultScalarValue> = graphql_value!({
+            "int": 1,
+        });
+        assert_eq!(r#"{"int": 1}"#, format!("{}", s));
+    }
+
+    #[test]
+    fn display_object_empty() {
+        let s = Value::<DefaultScalarValue>::object(Object::with_capacity(0));
+        assert_eq!(r#"{}"#, format!("{}", s));
     }
 }

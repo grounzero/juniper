@@ -4,10 +4,10 @@ use crate::{
     executor::{ExecutionResult, Executor, Registry, Variables},
     schema::{meta::MetaType, model::RootNode},
     types::{
-        base::{Arguments, GraphQLType},
-        scalars::EmptyMutation,
+        base::{Arguments, GraphQLType, GraphQLValue},
+        scalars::{EmptyMutation, EmptySubscription},
     },
-    value::{ScalarRefValue, ScalarValue, Value},
+    value::{ScalarValue, Value},
 };
 
 pub struct NodeTypeInfo {
@@ -22,11 +22,7 @@ pub struct Node {
 impl<S> GraphQLType<S> for Node
 where
     S: ScalarValue,
-    for<'b> &'b S: ScalarRefValue<'b>,
 {
-    type Context = ();
-    type TypeInfo = NodeTypeInfo;
-
     fn name(info: &Self::TypeInfo) -> Option<&str> {
         Some(&info.name)
     }
@@ -44,6 +40,18 @@ where
         registry
             .build_object_type::<Node>(info, &fields)
             .into_meta()
+    }
+}
+
+impl<S> GraphQLValue<S> for Node
+where
+    S: ScalarValue,
+{
+    type Context = ();
+    type TypeInfo = NodeTypeInfo;
+
+    fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
+        <Self as GraphQLType<S>>::name(info)
     }
 
     fn resolve_field(
@@ -75,10 +83,17 @@ fn test_node() {
     node.attributes.insert("foo".to_string(), "1".to_string());
     node.attributes.insert("bar".to_string(), "2".to_string());
     node.attributes.insert("baz".to_string(), "3".to_string());
-    let schema: RootNode<_, _> = RootNode::new_with_info(node, EmptyMutation::new(), node_info, ());
+    let schema: RootNode<_, _, _> = RootNode::new_with_info(
+        node,
+        EmptyMutation::new(),
+        EmptySubscription::new(),
+        node_info,
+        (),
+        (),
+    );
 
     assert_eq!(
-        crate::execute(doc, None, &schema, &Variables::new(), &()),
+        crate::execute_sync(doc, None, &schema, &Variables::new(), &()),
         Ok((
             Value::object(
                 vec![

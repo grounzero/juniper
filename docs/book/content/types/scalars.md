@@ -12,7 +12,7 @@ There are two ways to define custom scalars.
 * For simple scalars that just wrap a primitive type, you can use the newtype pattern with
 a custom derive. 
 * For more advanced use cases with custom validation, you can use
-the `graphql_scalar!` macro.
+the `graphql_scalar` proc macro.
 
 
 ## Built-in scalars
@@ -27,6 +27,8 @@ Juniper has built-in support for:
   spec](http://facebook.github.io/graphql/#sec-ID) as a type that is serialized
   as a string but can be parsed from both a string and an integer.
 
+Note that there is no built-in support for `i64`/`u64`, as the GraphQL spec [doesn't define any built-in scalars for `i64`/`u64` by default](https://spec.graphql.org/June2018/#sec-Int). You may wish to leverage a [custom GraphQL scalar](#custom-scalars) in your schema to support them.
+
 **Third party types**:
 
 Juniper has built-in support for a few additional types from common third party
@@ -35,6 +37,7 @@ crates. They are enabled via features that are on by default.
 * uuid::Uuid
 * chrono::DateTime
 * url::Url
+* bson::oid::ObjectId
 
 ## newtype pattern
 
@@ -44,6 +47,7 @@ This can be done with the newtype pattern and a custom derive, similar to how
 serde supports this pattern with `#[serde(transparent)]`.
 
 ```rust
+# extern crate juniper;
 #[derive(juniper::GraphQLScalarValue)]
 pub struct UserId(i32);
 
@@ -60,6 +64,7 @@ That's it, you can now user `UserId` in your schema.
 The macro also allows for more customization:
 
 ```rust
+# extern crate juniper;
 /// You can use a doc comment to specify a description.
 #[derive(juniper::GraphQLScalarValue)]
 #[graphql(
@@ -78,7 +83,7 @@ pub struct UserId(i32);
 ## Custom scalars
 
 For more complex situations where you also need custom parsing or validation, 
-you can use the `graphql_scalar!` macro.
+you can use the `graphql_scalar` proc macro.
 
 Typically, you represent your custom scalars as strings.
 
@@ -95,6 +100,7 @@ The example below is used just for illustration.
 
 
 ```rust
+# extern crate juniper;
 # mod date { 
 #    pub struct Date; 
 #    impl std::str::FromStr for Date{ 
@@ -111,25 +117,28 @@ The example below is used just for illustration.
 use juniper::{Value, ParseScalarResult, ParseScalarValue};
 use date::Date;
 
-juniper::graphql_scalar!(Date where Scalar = <S> {
-    description: "Date"
-
+#[juniper::graphql_scalar(description = "Date")]
+impl<S> GraphQLScalar for Date 
+where
+    S: ScalarValue
+{
     // Define how to convert your custom scalar into a primitive type.
-    resolve(&self) -> Value {
+    fn resolve(&self) -> Value {
         Value::scalar(self.to_string())
     }
 
     // Define how to parse a primitive type into your custom scalar.
-    from_input_value(v: &InputValue) -> Option<Date> {
-        v.as_scalar_value::<String>()
-         .and_then(|s| s.parse().ok())
+    fn from_input_value(v: &InputValue) -> Option<Date> {
+        v.as_scalar_value()
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
     }
 
     // Define how to parse a string value.
-    from_str<'a>(value: ScalarToken<'a>) -> ParseScalarResult<'a, S> {
+    fn from_str<'a>(value: ScalarToken<'a>) -> ParseScalarResult<'a, S> {
         <String as ParseScalarValue<S>>::from_str(value)
     }
-});
+}
 
 # fn main() {}
 ```

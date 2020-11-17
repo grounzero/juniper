@@ -1,8 +1,11 @@
 use crate::{
     ast::Selection,
     executor::{ExecutionResult, Executor, Registry},
-    types::base::{Arguments, GraphQLType, TypeKind},
-    value::{ScalarRefValue, ScalarValue, Value},
+    types::{
+        async_await::{GraphQLTypeAsync, GraphQLValueAsync},
+        base::{Arguments, GraphQLType, GraphQLValue, TypeKind},
+    },
+    value::{ScalarValue, Value},
 };
 
 use crate::schema::{
@@ -13,34 +16,47 @@ use crate::schema::{
     model::{DirectiveLocation, DirectiveType, RootNode, SchemaType, TypeType},
 };
 
-impl<'a, CtxT, S, QueryT, MutationT> GraphQLType<S> for RootNode<'a, QueryT, MutationT, S>
+impl<'a, S, QueryT, MutationT, SubscriptionT> GraphQLType<S>
+    for RootNode<'a, QueryT, MutationT, SubscriptionT, S>
 where
     S: ScalarValue,
-    QueryT: GraphQLType<S, Context = CtxT>,
-    MutationT: GraphQLType<S, Context = CtxT>,
-    for<'b> &'b S: ScalarRefValue<'b>,
+    QueryT: GraphQLType<S>,
+    MutationT: GraphQLType<S, Context = QueryT::Context>,
+    SubscriptionT: GraphQLType<S, Context = QueryT::Context>,
 {
-    type Context = CtxT;
-    type TypeInfo = QueryT::TypeInfo;
-
-    fn name(info: &QueryT::TypeInfo) -> Option<&str> {
+    fn name(info: &Self::TypeInfo) -> Option<&str> {
         QueryT::name(info)
     }
 
-    fn meta<'r>(info: &QueryT::TypeInfo, registry: &mut Registry<'r, S>) -> MetaType<'r, S>
+    fn meta<'r>(info: &Self::TypeInfo, registry: &mut Registry<'r, S>) -> MetaType<'r, S>
     where
         S: 'r,
-        for<'b> &'b S: ScalarRefValue<'b>,
     {
         QueryT::meta(info, registry)
+    }
+}
+
+impl<'a, S, QueryT, MutationT, SubscriptionT> GraphQLValue<S>
+    for RootNode<'a, QueryT, MutationT, SubscriptionT, S>
+where
+    S: ScalarValue,
+    QueryT: GraphQLType<S>,
+    MutationT: GraphQLType<S, Context = QueryT::Context>,
+    SubscriptionT: GraphQLType<S, Context = QueryT::Context>,
+{
+    type Context = QueryT::Context;
+    type TypeInfo = QueryT::TypeInfo;
+
+    fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
+        QueryT::name(info)
     }
 
     fn resolve_field(
         &self,
-        info: &QueryT::TypeInfo,
+        info: &Self::TypeInfo,
         field: &str,
         args: &Arguments<S>,
-        executor: &Executor<CtxT, S>,
+        executor: &Executor<Self::Context, S>,
     ) -> ExecutionResult<S> {
         match field {
             "__schema" => executor
@@ -61,25 +77,61 @@ where
         info: &Self::TypeInfo,
         selection_set: Option<&[Selection<S>]>,
         executor: &Executor<Self::Context, S>,
-    ) -> Value<S> {
+    ) -> ExecutionResult<S> {
         use crate::{types::base::resolve_selection_set_into, value::Object};
         if let Some(selection_set) = selection_set {
             let mut result = Object::with_capacity(selection_set.len());
             if resolve_selection_set_into(self, info, selection_set, executor, &mut result) {
-                Value::Object(result)
+                Ok(Value::Object(result))
             } else {
-                Value::null()
+                Ok(Value::null())
             }
         } else {
+            // TODO: this panic seems useless, investigate why it is here.
             panic!("resolve() must be implemented by non-object output types");
         }
     }
 }
 
-#[crate::object_internal(
+impl<'a, S, QueryT, MutationT, SubscriptionT> GraphQLValueAsync<S>
+    for RootNode<'a, QueryT, MutationT, SubscriptionT, S>
+where
+    QueryT: GraphQLTypeAsync<S>,
+    QueryT::TypeInfo: Sync,
+    QueryT::Context: Sync + 'a,
+    MutationT: GraphQLTypeAsync<S, Context = QueryT::Context>,
+    MutationT::TypeInfo: Sync,
+    SubscriptionT: GraphQLType<S, Context = QueryT::Context> + Sync,
+    SubscriptionT::TypeInfo: Sync,
+    S: ScalarValue + Send + Sync,
+{
+    fn resolve_field_async<'b>(
+        &'b self,
+        info: &'b Self::TypeInfo,
+        field_name: &'b str,
+        arguments: &'b Arguments<S>,
+        executor: &'b Executor<Self::Context, S>,
+    ) -> crate::BoxFuture<'b, ExecutionResult<S>> {
+        use futures::future::ready;
+        match field_name {
+            "__schema" | "__type" => {
+                let v = self.resolve_field(info, field_name, arguments, executor);
+                Box::pin(ready(v))
+            }
+            _ => self
+                .query_type
+                .resolve_field_async(info, field_name, arguments, executor),
+        }
+    }
+}
+
+#[crate::graphql_object(
     name = "__Schema"
     Context = SchemaType<'a, S>,
     Scalar = S,
+    internal,
+    // FIXME: make this redundant.
+    noasync,
 )]
 impl<'a, S> SchemaType<'a, S>
 where
@@ -90,7 +142,10 @@ where
             .into_iter()
             .filter(|t| {
                 t.to_concrete()
-                    .map(|t| t.name() != Some("_EmptyMutation"))
+                    .map(|t| {
+                        !(t.name() == Some("_EmptyMutation")
+                            || t.name() == Some("_EmptySubscription"))
+                    })
                     .unwrap_or(false)
             })
             .collect::<Vec<_>>()
@@ -113,10 +168,13 @@ where
     }
 }
 
-#[crate::object_internal(
+#[crate::graphql_object(
     name = "__Type"
     Context = SchemaType<'a, S>,
     Scalar = S,
+    internal,
+    // FIXME: make this redundant.
+    noasync,
 )]
 impl<'a, S> TypeType<'a, S>
 where
@@ -244,10 +302,13 @@ where
     }
 }
 
-#[crate::object_internal(
+#[crate::graphql_object(
     name = "__Field",
     Context = SchemaType<'a, S>,
     Scalar = S,
+    internal,
+    // FIXME: make this redundant.
+    noasync,
 )]
 impl<'a, S> Field<'a, S>
 where
@@ -281,10 +342,13 @@ where
     }
 }
 
-#[crate::object_internal(
+#[crate::graphql_object(
     name = "__InputValue",
     Context = SchemaType<'a, S>,
     Scalar = S,
+    internal,
+    // FIXME: make this redundant.
+    noasync,
 )]
 impl<'a, S> Argument<'a, S>
 where
@@ -308,9 +372,12 @@ where
     }
 }
 
-#[crate::object_internal(
+#[crate::graphql_object(
     name = "__EnumValue",
     Scalar = S,
+    internal,
+    // FIXME: make this redundant.
+    noasync,
 )]
 impl<'a, S> EnumValue
 where
@@ -333,10 +400,13 @@ where
     }
 }
 
-#[crate::object_internal(
+#[crate::graphql_object(
     name = "__Directive",
     Context = SchemaType<'a, S>,
     Scalar = S,
+    internal,
+    // FIXME: make this redundant.
+    noasync,
 )]
 impl<'a, S> DirectiveType<'a, S>
 where

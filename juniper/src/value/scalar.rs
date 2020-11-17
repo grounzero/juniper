@@ -1,7 +1,11 @@
-use crate::parser::{ParseError, ScalarToken};
-use juniper_codegen::GraphQLScalarValueInternal as GraphQLScalarValue;
+use std::fmt;
+
 use serde::{de, ser::Serialize};
-use std::fmt::{self, Debug, Display};
+
+use crate::{
+    parser::{ParseError, ScalarToken},
+    GraphQLScalarValue,
+};
 
 /// The result of converting a string into a scalar value
 pub type ParseScalarResult<'a, S = DefaultScalarValue> = Result<S, ParseError<'a>>;
@@ -9,14 +13,14 @@ pub type ParseScalarResult<'a, S = DefaultScalarValue> = Result<S, ParseError<'a
 /// A trait used to convert a `ScalarToken` into a certain scalar value type
 pub trait ParseScalarValue<S = DefaultScalarValue> {
     /// See the trait documentation
-    fn from_str<'a>(value: ScalarToken<'a>) -> ParseScalarResult<'a, S>;
+    fn from_str(value: ScalarToken<'_>) -> ParseScalarResult<'_, S>;
 }
 
 /// A trait marking a type that could be used as internal representation of
 /// scalar values in juniper
 ///
 /// The main objective of this abstraction is to allow other libraries to
-/// replace the default representation with something that better fits thei
+/// replace the default representation with something that better fits their
 /// needs.
 /// There is a custom derive (`#[derive(juniper::GraphQLScalarValue)]`) available that implements
 /// most of the required traits automatically for a enum representing a scalar value.
@@ -31,11 +35,9 @@ pub trait ParseScalarValue<S = DefaultScalarValue> {
 /// The following example introduces an new variant that is able to store 64 bit integers.
 ///
 /// ```
-/// # extern crate juniper;
-/// # extern crate serde;
+/// # use std::fmt;
 /// # use serde::{de, Deserialize, Deserializer};
 /// # use juniper::ScalarValue;
-/// # use std::fmt;
 /// #
 /// #[derive(Debug, Clone, PartialEq, juniper::GraphQLScalarValue)]
 /// enum MyScalarValue {
@@ -51,29 +53,43 @@ pub trait ParseScalarValue<S = DefaultScalarValue> {
 ///
 ///      fn as_int(&self) -> Option<i32> {
 ///        match *self {
-///            MyScalarValue::Int(ref i) => Some(*i),
+///            Self::Int(ref i) => Some(*i),
 ///            _ => None,
 ///        }
 ///    }
 ///
 ///    fn as_string(&self) -> Option<String> {
 ///        match *self {
-///            MyScalarValue::String(ref s) => Some(s.clone()),
+///            Self::String(ref s) => Some(s.clone()),
+///            _ => None,
+///        }
+///    }
+///
+///    fn into_string(self) -> Option<String> {
+///        match self {
+///            Self::String(s) => Some(s),
+///            _ => None,
+///        }
+///    }
+///
+///    fn as_str(&self) -> Option<&str> {
+///        match *self {
+///            Self::String(ref s) => Some(s.as_str()),
 ///            _ => None,
 ///        }
 ///    }
 ///
 ///    fn as_float(&self) -> Option<f64> {
 ///        match *self {
-///            MyScalarValue::Int(ref i) => Some(*i as f64),
-///            MyScalarValue::Float(ref f) => Some(*f),
+///            Self::Int(ref i) => Some(*i as f64),
+///            Self::Float(ref f) => Some(*f),
 ///            _ => None,
 ///        }
 ///    }
 ///
 ///    fn as_boolean(&self) -> Option<bool> {
 ///        match *self {
-///            MyScalarValue::Boolean(ref b) => Some(*b),
+///            Self::Boolean(ref b) => Some(*b),
 ///            _ => None,
 ///        }
 ///    }
@@ -157,8 +173,8 @@ pub trait ParseScalarValue<S = DefaultScalarValue> {
 /// # fn main() {}
 /// ```
 pub trait ScalarValue:
-    Debug
-    + Display
+    fmt::Debug
+    + fmt::Display
     + PartialEq
     + Clone
     + Serialize
@@ -166,10 +182,7 @@ pub trait ScalarValue:
     + From<bool>
     + From<i32>
     + From<f64>
-    + Into<Option<bool>>
-    + Into<Option<i32>>
-    + Into<Option<f64>>
-    + Into<Option<String>>
+    + 'static
 {
     /// Serde visitor used to deserialize this scalar value
     type Visitor: for<'de> de::Visitor<'de, Value = Self> + Default;
@@ -195,20 +208,32 @@ pub trait ScalarValue:
 
     /// Convert the given scalar value into an integer value
     ///
-    /// This function is used for implementing `GraphQLType` for `i32` for all
+    /// This function is used for implementing `GraphQLValue` for `i32` for all
     /// scalar values. Implementations should convert all supported integer
     /// types with 32 bit or less to an integer if requested.
     fn as_int(&self) -> Option<i32>;
 
-    /// Convert the given scalar value into a string value
+    /// Represents this [`ScalarValue`] a [`String`] value.
     ///
-    /// This function is used for implementing `GraphQLType` for `String` for all
+    /// This function is used for implementing `GraphQLValue` for `String` for all
     /// scalar values
     fn as_string(&self) -> Option<String>;
 
+    /// Converts this [`ScalarValue`] into a [`String`] value.
+    ///
+    /// Same as [`ScalarValue::as_string`], but takes ownership, so allows to omit redundant
+    /// cloning.
+    fn into_string(self) -> Option<String>;
+
+    /// Convert the given scalar value into a string value
+    ///
+    /// This function is used for implementing `GraphQLValue` for `String` for all
+    /// scalar values
+    fn as_str(&self) -> Option<&str>;
+
     /// Convert the given scalar value into a float value
     ///
-    /// This function is used for implementing `GraphQLType` for `f64` for all
+    /// This function is used for implementing `GraphQLValue` for `f64` for all
     /// scalar values. Implementations should convert all supported integer
     /// types with 64 bit or less and all floating point values with 64 bit or
     /// less to a float if requested.
@@ -216,36 +241,24 @@ pub trait ScalarValue:
 
     /// Convert the given scalar value into a boolean value
     ///
-    /// This function is used for implementing `GraphQLType` for `bool` for all
+    /// This function is used for implementing `GraphQLValue` for `bool` for all
     /// scalar values.
     fn as_boolean(&self) -> Option<bool>;
-}
 
-/// A marker trait extending the [`ScalarValue`](../trait.ScalarValue.html) trait
-///
-/// This trait should not be relied on directly by most apps.  However, you may
-/// need a where clause in the form of `for<'b> &'b S: ScalarRefValue<'b>` to
-/// abstract over different scalar value types.
-///
-/// This is automatically implemented for a type as soon as the type implements
-/// `ScalarValue` and the additional conversations.
-pub trait ScalarRefValue<'a>:
-    Debug
-    + Into<Option<&'a bool>>
-    + Into<Option<&'a i32>>
-    + Into<Option<&'a String>>
-    + Into<Option<&'a f64>>
-{
-}
-
-impl<'a, T> ScalarRefValue<'a> for &'a T
-where
-    T: ScalarValue,
-    &'a T: Into<Option<&'a bool>>
-        + Into<Option<&'a i32>>
-        + Into<Option<&'a String>>
-        + Into<Option<&'a f64>>,
-{
+    /// Converts this [`ScalarValue`] into another one.
+    fn into_another<S: ScalarValue>(self) -> S {
+        if let Some(i) = self.as_int() {
+            S::from(i)
+        } else if let Some(f) = self.as_float() {
+            S::from(f)
+        } else if let Some(b) = self.as_boolean() {
+            S::from(b)
+        } else if let Some(s) = self.into_string() {
+            S::from(s)
+        } else {
+            unreachable!("`ScalarValue` must represent at least one of the GraphQL spec types")
+        }
+    }
 }
 
 /// The default scalar value representation in juniper
@@ -265,37 +278,60 @@ impl ScalarValue for DefaultScalarValue {
 
     fn as_int(&self) -> Option<i32> {
         match *self {
-            DefaultScalarValue::Int(ref i) => Some(*i),
-            _ => None,
-        }
-    }
-
-    fn as_string(&self) -> Option<String> {
-        match *self {
-            DefaultScalarValue::String(ref s) => Some(s.clone()),
+            Self::Int(ref i) => Some(*i),
             _ => None,
         }
     }
 
     fn as_float(&self) -> Option<f64> {
         match *self {
-            DefaultScalarValue::Int(ref i) => Some(*i as f64),
-            DefaultScalarValue::Float(ref f) => Some(*f),
+            Self::Int(ref i) => Some(*i as f64),
+            Self::Float(ref f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match *self {
+            Self::String(ref s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn as_string(&self) -> Option<String> {
+        match *self {
+            Self::String(ref s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    fn into_string(self) -> Option<String> {
+        match self {
+            Self::String(s) => Some(s),
             _ => None,
         }
     }
 
     fn as_boolean(&self) -> Option<bool> {
         match *self {
-            DefaultScalarValue::Boolean(ref b) => Some(*b),
+            Self::Boolean(ref b) => Some(*b),
             _ => None,
+        }
+    }
+
+    fn into_another<S: ScalarValue>(self) -> S {
+        match self {
+            Self::Int(i) => S::from(i),
+            Self::Float(f) => S::from(f),
+            Self::String(s) => S::from(s),
+            Self::Boolean(b) => S::from(b),
         }
     }
 }
 
 impl<'a> From<&'a str> for DefaultScalarValue {
     fn from(s: &'a str) -> Self {
-        DefaultScalarValue::String(s.into())
+        Self::String(s.into())
     }
 }
 

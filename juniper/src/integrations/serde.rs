@@ -2,8 +2,8 @@ use indexmap::IndexMap;
 use serde::{
     de,
     ser::{self, SerializeMap},
+    Serialize,
 };
-use serde_derive::Serialize;
 
 use std::fmt;
 
@@ -72,6 +72,10 @@ impl<'a> ser::Serialize for GraphQLError<'a> {
             .serialize(serializer),
             GraphQLError::IsSubscription => [SerializeHelper {
                 message: "Expected query, got subscription",
+            }]
+            .serialize(serializer),
+            GraphQLError::NotSubscription => [SerializeHelper {
+                message: "Expected subscription, got query",
             }]
             .serialize(serializer),
         }
@@ -430,7 +434,7 @@ mod tests {
         // large value without a decimal part is also float
         assert_eq!(
             from_str::<InputValue<DefaultScalarValue>>("123567890123").unwrap(),
-            InputValue::scalar(123567890123.0)
+            InputValue::scalar(123_567_890_123.0)
         );
     }
 
@@ -450,7 +454,8 @@ mod tests {
             to_string(&ExecutionError::at_origin(FieldError::new(
                 "foo error",
                 Value::Object(obj),
-            ))).unwrap(),
+            )))
+            .unwrap(),
             r#"{"message":"foo error","locations":[{"line":1,"column":1}],"path":[],"extensions":{"foo":"bar"}}"#
         );
     }

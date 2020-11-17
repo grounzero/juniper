@@ -1,21 +1,26 @@
 #![deny(warnings)]
 
-extern crate log;
+use std::env;
 
 use juniper::{
-    tests::{model::Database, schema::Query},
-    EmptyMutation, RootNode,
+    tests::fixtures::starwars::schema::{Database, Query},
+    EmptyMutation, EmptySubscription, RootNode,
 };
 use warp::{http::Response, Filter};
 
-type Schema = RootNode<'static, Query, EmptyMutation<Database>>;
+type Schema = RootNode<'static, Query, EmptyMutation<Database>, EmptySubscription<Database>>;
 
 fn schema() -> Schema {
-    Schema::new(Query, EmptyMutation::<Database>::new())
+    Schema::new(
+        Query,
+        EmptyMutation::<Database>::new(),
+        EmptySubscription::<Database>::new(),
+    )
 }
 
-fn main() {
-    ::std::env::set_var("RUST_LOG", "warp_server");
+#[tokio::main]
+async fn main() {
+    env::set_var("RUST_LOG", "warp_server");
     env_logger::init();
 
     let log = warp::log("warp_server");
@@ -34,12 +39,13 @@ fn main() {
     let graphql_filter = juniper_warp::make_graphql_filter(schema(), state.boxed());
 
     warp::serve(
-        warp::get2()
+        warp::get()
             .and(warp::path("graphiql"))
-            .and(juniper_warp::graphiql_filter("/graphql"))
+            .and(juniper_warp::graphiql_filter("/graphql", None))
             .or(homepage)
             .or(warp::path("graphql").and(graphql_filter))
             .with(log),
     )
-    .run(([127, 0, 0, 1], 8080));
+    .run(([127, 0, 0, 1], 8080))
+    .await
 }
